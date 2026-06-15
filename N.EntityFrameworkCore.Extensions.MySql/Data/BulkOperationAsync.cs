@@ -15,17 +15,15 @@ internal sealed partial class BulkOperation<T>
 {
     internal async Task<BulkInsertResult<T>> BulkInsertStagingDataAsync(IEnumerable<T> entities, bool keepIdentity = true, bool useInternalId = false, CancellationToken cancellationToken = default)
     {
-        IEnumerable<string> columnsToInsert = GetColumnNames(keepIdentity);
+        var columnsToInsert = GetColumnNames(keepIdentity).ToList();
         string internalIdColumn = useInternalId ? Common.Constants.InternalId_ColumnName : null;
+        stagingColumnNames = columnsToInsert.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (internalIdColumn != null)
+            stagingColumnNames.Add(internalIdColumn);
         await Context.Database.CloneTableAsync(SchemaQualifiedTableNames, StagingTableName, TableMapping.GetQualifiedColumnNames(columnsToInsert), internalIdColumn, cancellationToken, isTemporary: !Options.UsePermanentTable);
         StagingTableCreated = true;
-        // ALTER TABLE on temporary tables causes an implicit commit in MySQL, which would break
-        // any active user transaction. Skip adding the index when inside a user-provided transaction.
-        if (keepIdentity && PrimaryKeyColumnNames.Length > 0 && Context.Database.IsMySql() && DbTransactionContext.OwnsTransaction)
-        {
-            string indexColumns = string.Join(",", PrimaryKeyColumnNames.Select(c => Context.DelimitIdentifier(c)));
-            await Context.Database.ExecuteSqlAsync($"ALTER TABLE {StagingTableName} ADD INDEX idx_pk ({indexColumns})", Options.CommandTimeout, cancellationToken);
-        }
+        if (keepIdentity)
+            await EnsureStagingIndexAsync(PrimaryKeyColumnNames, cancellationToken);
         return await DbContextExtensionsAsync.BulkInsertAsync(entities, Options, TableMapping, Connection, Transaction, StagingTableName, columnsToInsert, useInternalId, cancellationToken);
     }
 
@@ -45,6 +43,9 @@ internal sealed partial class BulkOperation<T>
         Dictionary<IEntityType, int> rowsUpdated = [];
         Dictionary<IEntityType, int> rowsDeleted = [];
         List<BulkMergeOutputRow<T>> outputRows = [];
+
+        if (update || delete || insertIfNotExists || autoMapOutput)
+            await EnsureStagingIndexAsync(GetStagingJoinColumns(mergeOnCondition), cancellationToken);
 
         foreach (var entityType in TableMapping.EntityTypes)
         {
@@ -158,6 +159,7 @@ internal sealed partial class BulkOperation<T>
     private async Task<int> ExecuteUpdateMySqlAsync(Expression<Func<T, T, bool>> updateOnCondition, CancellationToken cancellationToken)
     {
         int rowsUpdated = 0;
+        await EnsureStagingIndexAsync(GetStagingJoinColumns(updateOnCondition), cancellationToken);
         foreach (var entityType in TableMapping.EntityTypes)
         {
             IEnumerable<string> columnsToUpdate = GetColumnNames(entityType);
@@ -167,6 +169,29 @@ internal sealed partial class BulkOperation<T>
             rowsUpdated = Math.Max(rowsUpdated, await Context.Database.ExecuteSqlAsync(updateSql, Options.CommandTimeout, cancellationToken));
         }
         return rowsUpdated;
+    }
+    private async Task EnsureStagingIndexAsync(IEnumerable<string> columns, CancellationToken cancellationToken)
+    {
+        // ALTER TABLE causes an implicit commit in MySQL, which would break a user-provided transaction.
+        if (!Context.Database.IsMySql() || !DbTransactionContext.OwnsTransaction)
+            return;
+
+        var indexColumns = columns?
+            .Where(c => stagingColumnNames.Contains(c))
+            .Where(CanIndexStagingColumn)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
+        if (indexColumns.Count == 0)
+            return;
+
+        string indexKey = string.Join("|", indexColumns);
+        if (!stagingIndexes.Add(indexKey))
+            return;
+
+        string indexName = Context.DelimitIdentifier($"idx_staging_{stagingIndexes.Count}");
+        string delimitedColumns = string.Join(",", indexColumns.Select(c => Context.DelimitIdentifier(c)));
+        await Context.Database.ExecuteSqlAsync($"ALTER TABLE {StagingTableName} ADD INDEX {indexName} ({delimitedColumns})", Options.CommandTimeout, cancellationToken);
     }
     internal async Task PreallocateIdentityValuesAsync(IEnumerable<T> entities, CancellationToken cancellationToken)
     {
