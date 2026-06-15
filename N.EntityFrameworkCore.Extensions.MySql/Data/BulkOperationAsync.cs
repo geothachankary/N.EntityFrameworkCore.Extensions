@@ -67,13 +67,17 @@ internal sealed partial class BulkOperation<T>
             rowsUpdated[entityType] = 0;
             if (columnsToUpdate.Count > 0)
             {
-                // MySQL UPDATE returns "rows changed" by default, not "rows matched".
-                // Count matched rows first to get reliable "rows found" semantics.
-                string matchCountSql = $"SELECT COUNT(*) FROM {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {joinCondition}";
-                rowsUpdated[entityType] = Convert.ToInt32(await Context.Database.ExecuteScalarAsync(matchCountSql, null, Options.CommandTimeout, cancellationToken));
+                if (!ReturnsMatchedRowsForUpdates())
+                {
+                    string matchCountSql = $"SELECT COUNT(*) FROM {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {joinCondition}";
+                    rowsUpdated[entityType] = Convert.ToInt32(await Context.Database.ExecuteScalarAsync(matchCountSql, null, Options.CommandTimeout, cancellationToken));
+                }
+
                 string updateSetExpression = string.Join(",", columnsToUpdate.Select(c => $"t.{Context.DelimitIdentifier(c)}=s.{Context.DelimitIdentifier(c)}"));
                 string updateSql = $"UPDATE {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {joinCondition} SET {updateSetExpression}";
-                await Context.Database.ExecuteSqlAsync(updateSql, Options.CommandTimeout, cancellationToken);
+                int updateRows = await Context.Database.ExecuteSqlAsync(updateSql, Options.CommandTimeout, cancellationToken);
+                if (ReturnsMatchedRowsForUpdates())
+                    rowsUpdated[entityType] = updateRows;
             }
 
             rowsDeleted[entityType] = 0;
@@ -145,10 +149,10 @@ internal sealed partial class BulkOperation<T>
         return new BulkMergeResult<T>
         {
             Output = outputRows,
-            RowsAffected = rowsInserted.Values.FirstOrDefault() + rowsUpdated.Values.FirstOrDefault() + rowsDeleted.Values.Sum(),
-            RowsDeleted = rowsDeleted.Values.Sum(),
-            RowsInserted = rowsInserted.Values.FirstOrDefault(),
-            RowsUpdated = rowsUpdated.Values.FirstOrDefault()
+            RowsAffected = GetLogicalRowCount(rowsInserted) + GetLogicalRowCount(rowsUpdated) + GetLogicalRowCount(rowsDeleted),
+            RowsDeleted = GetLogicalRowCount(rowsDeleted),
+            RowsInserted = GetLogicalRowCount(rowsInserted),
+            RowsUpdated = GetLogicalRowCount(rowsUpdated)
         };
     }
     private async Task<int> ExecuteUpdateMySqlAsync(Expression<Func<T, T, bool>> updateOnCondition, CancellationToken cancellationToken)
@@ -160,7 +164,7 @@ internal sealed partial class BulkOperation<T>
             string updateSetExpression = string.Join(",", columnsToUpdate.Select(c => $"t.{Context.DelimitIdentifier(c)}=s.{Context.DelimitIdentifier(c)}"));
             string targetTableName = Context.DelimitIdentifier(entityType.GetTableName(), entityType.GetSchema() ?? Context.Database.GetDefaultSchema());
             string updateSql = $"UPDATE {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {CommonUtil<T>.GetJoinConditionSql(Context, updateOnCondition, PrimaryKeyColumnNames, "s", "t")} SET {updateSetExpression}";
-            rowsUpdated = await Context.Database.ExecuteSqlAsync(updateSql, Options.CommandTimeout, cancellationToken);
+            rowsUpdated = Math.Max(rowsUpdated, await Context.Database.ExecuteSqlAsync(updateSql, Options.CommandTimeout, cancellationToken));
         }
         return rowsUpdated;
     }

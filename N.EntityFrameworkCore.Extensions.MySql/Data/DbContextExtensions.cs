@@ -486,19 +486,26 @@ public static class DbContextExtensions
             if (includeColumns.Count == 0)
                 return new BulkInsertResult<T> { RowsAffected = 0, EntityMap = dataReader.EntityMap };
 
-            var bulkCopy = new MySqlBulkCopy(mySqlConnection, transaction as MySqlTransaction)
+            int rowsInserted;
+            if (CanUseMySqlBulkCopy(mySqlConnection, transaction as MySqlTransaction, options))
             {
-                DestinationTableName = UnwrapTableName(tableName)
-            };
-            if (options.CommandTimeout.HasValue)
-                bulkCopy.BulkCopyTimeout = options.CommandTimeout.Value;
-            foreach (var column in includeColumns)
-                bulkCopy.ColumnMappings.Add(new MySqlBulkCopyColumnMapping(column.ordinal, column.name, null));
-            var result = bulkCopy.WriteToServer(dataReader);
+                try
+                {
+                    rowsInserted = ExecuteMySqlBulkCopy(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options);
+                }
+                catch (MySqlException ex) when (IsMySqlLocalInfileDisabledException(ex))
+                {
+                    rowsInserted = ExecuteMySqlBatchedInsert(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options);
+                }
+            }
+            else
+            {
+                rowsInserted = ExecuteMySqlBatchedInsert(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options);
+            }
 
             return new BulkInsertResult<T>
             {
-                RowsAffected = result.RowsInserted,
+                RowsAffected = rowsInserted,
                 EntityMap = dataReader.EntityMap
             };
         }
@@ -522,6 +529,82 @@ public static class DbContextExtensions
     }
     internal static string UnwrapTableName(string tableName) => tableName.Replace("`", "");
     internal static bool IsMySqlTargetTableDeleteException(MySqlException exception) => exception.Number == 1093;
+    internal static bool IsMySqlLocalInfileDisabledException(MySqlException exception) => exception.Number is 3948 or 3950;
+    internal static bool CanUseMySqlBulkCopy(MySqlConnection mySqlConnection, MySqlTransaction transaction, BulkOptions options)
+    {
+        var connectionStringBuilder = new MySqlConnectionStringBuilder(mySqlConnection.ConnectionString);
+        if (!connectionStringBuilder.AllowLoadLocalInfile)
+            return false;
+
+        using var command = mySqlConnection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT @@local_infile";
+        if (options.CommandTimeout.HasValue)
+            command.CommandTimeout = options.CommandTimeout.Value;
+        return Convert.ToInt32(command.ExecuteScalar()) == 1;
+    }
+    private static int ExecuteMySqlBulkCopy<T>(EntityDataReader<T> dataReader, MySqlConnection mySqlConnection, MySqlTransaction transaction, string tableName,
+        List<(int ordinal, string name)> includeColumns, BulkOptions options)
+    {
+        var bulkCopy = new MySqlBulkCopy(mySqlConnection, transaction)
+        {
+            DestinationTableName = UnwrapTableName(tableName)
+        };
+        if (options.CommandTimeout.HasValue)
+            bulkCopy.BulkCopyTimeout = options.CommandTimeout.Value;
+        foreach (var column in includeColumns)
+            bulkCopy.ColumnMappings.Add(new MySqlBulkCopyColumnMapping(column.ordinal, column.name, null));
+        return bulkCopy.WriteToServer(dataReader).RowsInserted;
+    }
+    private static int ExecuteMySqlBatchedInsert<T>(EntityDataReader<T> dataReader, MySqlConnection mySqlConnection, MySqlTransaction transaction, string tableName,
+        List<(int ordinal, string name)> includeColumns, BulkOptions options)
+    {
+        string destTable = UnwrapTableName(tableName);
+        string columnList = string.Join(",", includeColumns.Select(c => $"`{c.name}`"));
+        const int batchSize = 500;
+        int totalInserted = 0;
+        var rowBuffer = new List<object[]>(batchSize);
+
+        using var cmd = mySqlConnection.CreateCommand();
+        cmd.Transaction = transaction;
+        if (options.CommandTimeout.HasValue)
+            cmd.CommandTimeout = options.CommandTimeout.Value;
+
+        void FlushBatch()
+        {
+            if (rowBuffer.Count == 0) return;
+            cmd.Parameters.Clear();
+            var sb = new System.Text.StringBuilder($"INSERT INTO `{destTable}` ({columnList}) VALUES ");
+            for (int r = 0; r < rowBuffer.Count; r++)
+            {
+                if (r > 0) sb.Append(',');
+                sb.Append('(');
+                for (int c = 0; c < includeColumns.Count; c++)
+                {
+                    if (c > 0) sb.Append(',');
+                    string paramName = $"@p{r}_{c}";
+                    sb.Append(paramName);
+                    cmd.Parameters.AddWithValue(paramName, rowBuffer[r][c] ?? DBNull.Value);
+                }
+                sb.Append(')');
+            }
+            cmd.CommandText = sb.ToString();
+            totalInserted += cmd.ExecuteNonQuery();
+            rowBuffer.Clear();
+        }
+
+        while (dataReader.Read())
+        {
+            var rowData = new object[includeColumns.Count];
+            for (int i = 0; i < includeColumns.Count; i++)
+                rowData[i] = dataReader.GetValue(includeColumns[i].ordinal) ?? DBNull.Value;
+            rowBuffer.Add(rowData);
+            if (rowBuffer.Count >= batchSize)
+                FlushBatch();
+        }
+        FlushBatch();
+        return totalInserted;
+    }
     internal static BulkQueryResult BulkQuery(this DbContext context, string sqlText, BulkOptions options)
     {
         List<object[]> results = [];

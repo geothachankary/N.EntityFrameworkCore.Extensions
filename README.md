@@ -75,11 +75,11 @@ Or install **only the provider you need**:
 
 | Provider | Package |
 | --- | --- |
-| SQL Server | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.SqlServer?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.SqlServer) `dotnet add package N.EntityFrameworkCore.Extensions.SqlServer` |
-| PostgreSQL | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.PostgreSql?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.PostgreSql) `dotnet add package N.EntityFrameworkCore.Extensions.PostgreSql` |
-| MySQL | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.MySql?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.MySql) `dotnet add package N.EntityFrameworkCore.Extensions.MySql` |
-| SQLite | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.Sqlite?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Sqlite) `dotnet add package N.EntityFrameworkCore.Extensions.Sqlite` |
-| Oracle | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.Oracle?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Oracle) `dotnet add package N.EntityFrameworkCore.Extensions.Oracle` |
+| SQL Server | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.SqlServer?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.SqlServer) [![](https://img.shields.io/nuget/dt/N.EntityFrameworkCore.Extensions.SqlServer?label=Downloads)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.SqlServer) `dotnet add package N.EntityFrameworkCore.Extensions.SqlServer` |
+| PostgreSQL | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.PostgreSql?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.PostgreSql) [![](https://img.shields.io/nuget/dt/N.EntityFrameworkCore.Extensions.PostgreSql?label=Downloads)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.PostgreSql) `dotnet add package N.EntityFrameworkCore.Extensions.PostgreSql` |
+| MySQL | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.MySql?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.MySql) [![](https://img.shields.io/nuget/dt/N.EntityFrameworkCore.Extensions.MySql?label=Downloads)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.MySql) `dotnet add package N.EntityFrameworkCore.Extensions.MySql` |
+| SQLite | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.Sqlite?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Sqlite) [![](https://img.shields.io/nuget/dt/N.EntityFrameworkCore.Extensions.Sqlite?label=Downloads)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Sqlite) `dotnet add package N.EntityFrameworkCore.Extensions.Sqlite` |
+| Oracle | [![](https://img.shields.io/nuget/v/N.EntityFrameworkCore.Extensions.Oracle?label=NuGet)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Oracle) [![](https://img.shields.io/nuget/dt/N.EntityFrameworkCore.Extensions.Oracle?label=Downloads)](https://www.nuget.org/packages/N.EntityFrameworkCore.Extensions.Oracle) `dotnet add package N.EntityFrameworkCore.Extensions.Oracle` |
 
 ---
 

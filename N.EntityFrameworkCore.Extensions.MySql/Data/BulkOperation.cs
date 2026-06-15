@@ -4,6 +4,7 @@ using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
+using MySqlConnector;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -131,11 +132,17 @@ internal sealed partial class BulkOperation<T> : IDisposable
             rowsUpdated[entityType] = 0;
             if (columnsToUpdate.Count > 0)
             {
-                // MySQL UPDATE with JOIN syntax. Tests set UseAffectedRows=false, so MySqlConnector
-                // returns matched rows instead of only changed rows.
+                if (!ReturnsMatchedRowsForUpdates())
+                {
+                    string matchCountSql = $"SELECT COUNT(*) FROM {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {joinCondition}";
+                    rowsUpdated[entityType] = Convert.ToInt32(Context.Database.ExecuteScalar(matchCountSql, null, Options.CommandTimeout));
+                }
+
                 string updateSetExpression = string.Join(",", columnsToUpdate.Select(c => $"t.{Context.DelimitIdentifier(c)}=s.{Context.DelimitIdentifier(c)}"));
                 string updateSql = $"UPDATE {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {joinCondition} SET {updateSetExpression}";
-                rowsUpdated[entityType] = Context.Database.ExecuteSqlInternal(updateSql, Options.CommandTimeout);
+                int updateRows = Context.Database.ExecuteSqlInternal(updateSql, Options.CommandTimeout);
+                if (ReturnsMatchedRowsForUpdates())
+                    rowsUpdated[entityType] = updateRows;
             }
 
             rowsDeleted[entityType] = 0;
@@ -214,10 +221,10 @@ internal sealed partial class BulkOperation<T> : IDisposable
         return new BulkMergeResult<T>
         {
             Output = outputRows,
-            RowsAffected = rowsInserted.Values.FirstOrDefault() + rowsUpdated.Values.FirstOrDefault() + rowsDeleted.Values.Sum(),
-            RowsDeleted = rowsDeleted.Values.Sum(),
-            RowsInserted = rowsInserted.Values.FirstOrDefault(),
-            RowsUpdated = rowsUpdated.Values.FirstOrDefault()
+            RowsAffected = GetLogicalRowCount(rowsInserted) + GetLogicalRowCount(rowsUpdated) + GetLogicalRowCount(rowsDeleted),
+            RowsDeleted = GetLogicalRowCount(rowsDeleted),
+            RowsInserted = GetLogicalRowCount(rowsInserted),
+            RowsUpdated = GetLogicalRowCount(rowsUpdated)
         };
     }
     private int ExecuteUpdateMySql(Expression<Func<T, T, bool>> updateOnCondition)
@@ -230,9 +237,18 @@ internal sealed partial class BulkOperation<T> : IDisposable
             string targetTableName = Context.DelimitIdentifier(entityType.GetTableName(), entityType.GetSchema() ?? Context.Database.GetDefaultSchema());
             // MySQL UPDATE with JOIN syntax
             string updateSql = $"UPDATE {StagingTableName} AS s INNER JOIN {targetTableName} AS t ON {CommonUtil<T>.GetJoinConditionSql(Context, updateOnCondition, PrimaryKeyColumnNames, "s", "t")} SET {updateSetExpression}";
-            rowsUpdated = Context.Database.ExecuteSqlInternal(updateSql, Options.CommandTimeout);
+            rowsUpdated = Math.Max(rowsUpdated, Context.Database.ExecuteSqlInternal(updateSql, Options.CommandTimeout));
         }
         return rowsUpdated;
+    }
+    private static int GetLogicalRowCount(Dictionary<IEntityType, int> rowCounts)
+    {
+        return rowCounts.Values.DefaultIfEmpty(0).Max();
+    }
+    private bool ReturnsMatchedRowsForUpdates()
+    {
+        var connectionStringBuilder = new MySqlConnectionStringBuilder(Connection.ConnectionString);
+        return !connectionStringBuilder.UseAffectedRows;
     }
     private HashSet<int> GetMatchedInternalIds(string targetTableName, string joinCondition)
     {

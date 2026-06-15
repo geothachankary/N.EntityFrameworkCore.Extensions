@@ -424,24 +424,94 @@ public static class DbContextExtensionsAsync
             if (includeColumns.Count == 0)
                 return new BulkInsertResult<T> { RowsAffected = 0, EntityMap = dataReader.EntityMap };
 
-            var bulkCopy = new MySqlBulkCopy(mySqlConnection, transaction as MySqlTransaction)
+            int rowsInserted;
+            if (DbContextExtensions.CanUseMySqlBulkCopy(mySqlConnection, transaction as MySqlTransaction, options))
             {
-                DestinationTableName = DbContextExtensions.UnwrapTableName(tableName)
-            };
-            if (options.CommandTimeout.HasValue)
-                bulkCopy.BulkCopyTimeout = options.CommandTimeout.Value;
-            foreach (var column in includeColumns)
-                bulkCopy.ColumnMappings.Add(new MySqlBulkCopyColumnMapping(column.ordinal, column.name, null));
-            var result = await bulkCopy.WriteToServerAsync(dataReader, cancellationToken);
+                try
+                {
+                    rowsInserted = await ExecuteMySqlBulkCopyAsync(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options, cancellationToken);
+                }
+                catch (MySqlException ex) when (DbContextExtensions.IsMySqlLocalInfileDisabledException(ex))
+                {
+                    rowsInserted = await ExecuteMySqlBatchedInsertAsync(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options, cancellationToken);
+                }
+            }
+            else
+            {
+                rowsInserted = await ExecuteMySqlBatchedInsertAsync(dataReader, mySqlConnection, transaction as MySqlTransaction, tableName, includeColumns, options, cancellationToken);
+            }
 
             return new BulkInsertResult<T>
             {
-                RowsAffected = result.RowsInserted,
+                RowsAffected = rowsInserted,
                 EntityMap = dataReader.EntityMap
             };
         }
 
         throw new NotSupportedException($"The connection type '{dbConnection.GetType().Name}' is not supported for BulkInsertAsync. Use a MySqlConnection.");
+    }
+    private static async Task<int> ExecuteMySqlBulkCopyAsync<T>(EntityDataReader<T> dataReader, MySqlConnection mySqlConnection, MySqlTransaction transaction, string tableName,
+        List<(int ordinal, string name)> includeColumns, BulkOptions options, CancellationToken cancellationToken)
+    {
+        var bulkCopy = new MySqlBulkCopy(mySqlConnection, transaction)
+        {
+            DestinationTableName = DbContextExtensions.UnwrapTableName(tableName)
+        };
+        if (options.CommandTimeout.HasValue)
+            bulkCopy.BulkCopyTimeout = options.CommandTimeout.Value;
+        foreach (var column in includeColumns)
+            bulkCopy.ColumnMappings.Add(new MySqlBulkCopyColumnMapping(column.ordinal, column.name, null));
+        var result = await bulkCopy.WriteToServerAsync(dataReader, cancellationToken);
+        return result.RowsInserted;
+    }
+    private static async Task<int> ExecuteMySqlBatchedInsertAsync<T>(EntityDataReader<T> dataReader, MySqlConnection mySqlConnection, MySqlTransaction transaction, string tableName,
+        List<(int ordinal, string name)> includeColumns, BulkOptions options, CancellationToken cancellationToken)
+    {
+        string destTable = DbContextExtensions.UnwrapTableName(tableName);
+        string columnList = string.Join(",", includeColumns.Select(c => $"`{c.name}`"));
+        const int batchSize = 500;
+        int totalInserted = 0;
+        var rowBuffer = new List<object[]>(batchSize);
+
+        await using var cmd = mySqlConnection.CreateCommand();
+        cmd.Transaction = transaction;
+        if (options.CommandTimeout.HasValue)
+            cmd.CommandTimeout = options.CommandTimeout.Value;
+
+        async Task FlushBatchAsync()
+        {
+            if (rowBuffer.Count == 0) return;
+            cmd.Parameters.Clear();
+            var sb = new System.Text.StringBuilder($"INSERT INTO `{destTable}` ({columnList}) VALUES ");
+            for (int r = 0; r < rowBuffer.Count; r++)
+            {
+                if (r > 0) sb.Append(',');
+                sb.Append('(');
+                for (int c = 0; c < includeColumns.Count; c++)
+                {
+                    if (c > 0) sb.Append(',');
+                    string paramName = $"@p{r}_{c}";
+                    sb.Append(paramName);
+                    cmd.Parameters.AddWithValue(paramName, rowBuffer[r][c] ?? DBNull.Value);
+                }
+                sb.Append(')');
+            }
+            cmd.CommandText = sb.ToString();
+            totalInserted += await cmd.ExecuteNonQueryAsync(cancellationToken);
+            rowBuffer.Clear();
+        }
+
+        while (dataReader.Read())
+        {
+            var rowData = new object[includeColumns.Count];
+            for (int i = 0; i < includeColumns.Count; i++)
+                rowData[i] = dataReader.GetValue(includeColumns[i].ordinal) ?? DBNull.Value;
+            rowBuffer.Add(rowData);
+            if (rowBuffer.Count >= batchSize)
+                await FlushBatchAsync();
+        }
+        await FlushBatchAsync();
+        return totalInserted;
     }
     internal static async Task<BulkQueryResult> BulkQueryAsync(this DbContext context, string sqlText, DbConnection dbConnection, DbTransaction transaction, BulkOptions options, CancellationToken cancellationToken = default)
     {
