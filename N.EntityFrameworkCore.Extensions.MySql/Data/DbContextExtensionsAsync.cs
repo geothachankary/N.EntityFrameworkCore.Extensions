@@ -169,10 +169,20 @@ public static class DbContextExtensionsAsync
                 bool keepIdentity = options.KeepIdentity || bulkOperation.ShouldPreallocateIdentityValues(options.AutoMapOutput, options.KeepIdentity, entities);
                 if (keepIdentity && !options.KeepIdentity)
                     await bulkOperation.PreallocateIdentityValuesAsync(entities, cancellationToken);
-                var bulkInsertResult = await bulkOperation.BulkInsertStagingDataAsync(entities, true, true);
-                var bulkMergeResult = await bulkOperation.ExecuteMergeAsync(bulkInsertResult.EntityMap, options.InsertOnCondition,
-                    options.AutoMapOutput, keepIdentity, options.InsertIfNotExists);
-                rowsAffected = bulkMergeResult.RowsAffected;
+
+                if (DbContextExtensions.CanUseDirectBulkInsert(bulkOperation, options))
+                {
+                    var columnsToInsert = bulkOperation.GetColumnNames(keepIdentity);
+                    rowsAffected = (await BulkInsertAsync(entities, options, bulkOperation.TableMapping, bulkOperation.Connection, bulkOperation.Transaction,
+                        bulkOperation.TableMapping.FullQualifedTableName, columnsToInsert, cancellationToken: cancellationToken)).RowsAffected;
+                }
+                else
+                {
+                    var bulkInsertResult = await bulkOperation.BulkInsertStagingDataAsync(entities, true, true);
+                    var bulkMergeResult = await bulkOperation.ExecuteMergeAsync(bulkInsertResult.EntityMap, options.InsertOnCondition,
+                        options.AutoMapOutput, keepIdentity, options.InsertIfNotExists);
+                    rowsAffected = bulkMergeResult.RowsAffected;
+                }
                 bulkOperation.DbTransactionContext.Commit();
             }
             catch (Exception)
